@@ -2,10 +2,10 @@ package main
 
 const (
 	APP_NAME = "Steam 2 PCGW Converter"
-	VERSION  = "v0.0.74"
+	VERSION  = "v0.0.75"
 	API_LINK = "https://store.steampowered.com/api/appdetails?appids="
 	LOCALE   = "&l=english"
-	GH_LINK  = "https://github.com/phyziyx/steam2pcgw"
+	GH_LINK  = "https://github.com/mastan-rus/steam2pcgw"
 )
 
 type GenreId int
@@ -73,5 +73,8 @@ const (
 	LocalMultiPlayer         CategoryId = 37 // Local Multi-Player,
 	OnlineCoOp               CategoryId = 38 // Online Co-op,
 	LocalCoOp                CategoryId = 39 // Local Co-op,
-	SteamVRCollectibles      CategoryId = 40 // SteamVR Collectibles
+	SteamVRCollectibles      CategoryId = 40 // SteamVR Collectibles,
+	TrackedControllerSupport CategoryId = 52 // Tracked Controller Support,
+	VRSupported              CategoryId = 53 // VR Supported (how is it different from 31?),
+	VROnly                   CategoryId = 54 // VR Only
 )

@@ -286,7 +286,7 @@ func GetExeBit(is32 bool, platform string, platforms Platforms, requirements Req
 		}
 	}
 
-	fmt.Printf("* [21/25] %s (32-bit: %v): %s\n", platform, is32, value)
+	fmt.Printf("* [23/26] %s (32-bit: %v): %s\n", platform, is32, value)
 
 	return value
 }
@@ -424,72 +424,51 @@ func (game *Game) parseAvailability(htmlString string) {
 	f(doc)
 }
 
-func (game *Game) parseReviews(htmlString string) {
-	reviewsRE := regexp.MustCompile(`<h2>Reviews<\/h2><a class='gReview.+<\/section>`)
-	reviews := reviewsRE.FindString(htmlString)
-	doc, _ := html.Parse(strings.NewReader(reviews))
-
-	var f func(n *html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "a" {
-			for _, a := range n.Attr {
-				if a.Key != "class" || !strings.Contains(a.Val, "gReview") {
-					continue
-				}
-
-				var href string
-				for _, b := range n.Attr {
-					if b.Key == "href" {
-						href = b.Val
-					}
-				}
-
-				for c := n.FirstChild; c != nil; c = c.NextSibling {
-					if c.Type != html.ElementNode || c.Data != "div" {
-						continue
-					}
-
-					for _, d := range c.Attr {
-						if d.Key != "class" || d.Val != "gReview__score" {
-							continue
-						}
-
-						for e := c.NextSibling; e != nil; e = e.NextSibling {
-							if e.Type != html.ElementNode || e.Data != "div" {
-								continue
-							}
-
-							for _, f := range e.Attr {
-								if f.Key != "class" && f.Val != "gReview__details" {
-									continue
-								}
-
-								for g := e.FirstChild; g != nil; g = g.NextSibling {
-									if g.Type != html.ElementNode || g.Data != "h3" {
-										continue
-									}
-
-									for h := g.FirstChild; h != nil; h = h.NextSibling {
-										if h.Type != html.TextNode {
-											continue
-										}
-
-										game.AddRating(h.Data, g.FirstChild.Data, href)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
+func regexSubstr(input string, format string) (string, error) {
+	infoRe := regexp.MustCompile(format)
+	match := infoRe.FindSubmatch([]byte(input))
+	if match == nil {
+		return "", errors.New("not found")
 	}
 
-	f(doc)
+	return string(match[1]), nil
+}
+
+func (game *Game) parseReviews(htmlString string) {
+	body, _ := regexSubstr(htmlString, `var page = (.+);`)
+	var allBody []interface{}
+	json.Unmarshal([]byte(body), &allBody)
+
+	if allBody == nil {
+		return
+	}
+
+	mainBody := allBody[1]
+
+	details := mainBody.(map[string]interface{})["detail"]
+	if details == nil {
+		return
+	}
+	reviews := details.(map[string]interface{})["reviews"]
+	if reviews == nil {
+		return
+	}
+
+	reviewList := reviews.([]interface{})
+
+	for _, v := range reviewList {
+		nn := v.(map[string]interface{})
+		count := nn["count"].(float64)
+
+		if count <= 4 {
+			continue
+		}
+
+		positive := (int64)(nn["positive"].(float64))
+		source := nn["source"].(string)
+		url := nn["url"].(string)
+		game.AddRating(source, strconv.FormatInt((positive), 10), url)
+	}
 }
 
 func (game *Game) AddStore(name, platforms, link string) {
@@ -640,8 +619,8 @@ func ProcessSpecs(input string, isMin bool) string {
 	}
 
 	// Replace
-	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sOS     = ", level), 1)
-	output = strings.Replace(output, "VR Support:", fmt.Sprintf("|%sother  = ", level), 1)
+	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sOS    = ", level), 1)
+	output = strings.Replace(output, "VR Support:", fmt.Sprintf("|%sother = ", level), 1)
 
 	// Processor stuff
 	if strings.Contains(output, "Processor:") {
@@ -649,15 +628,15 @@ func ProcessSpecs(input string, isMin bool) string {
 		cpus := cpuRegEx.FindStringSubmatch(output)
 
 		if len(cpus) == 4 {
-			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU    = %s\n|%sCPU2   = %s\n", level, cpus[2], level, strings.TrimPrefix(cpus[3], " ")))
+			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU   = %s\n|%sCPU2  = %s\n", level, cpus[2], level, strings.TrimPrefix(cpus[3], " ")))
 		} else {
 			cpuRegEx = regexp.MustCompile(`Processor:(.+)\n`)
 			cpus = cpuRegEx.FindStringSubmatch(output)
-			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU    = %s\n|%sCPU2   = %s\n", level, cpus[1], level, cpus[1]))
+			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU   = %s\n|%sCPU2  = %s\n", level, cpus[1], level, cpus[1]))
 		}
 	}
 
-	output = strings.TrimSuffix(strings.Replace(output, "Storage:", fmt.Sprintf("|%sHD     = ", level), 1), " ")
+	output = strings.TrimSuffix(strings.Replace(output, "Storage:", fmt.Sprintf("|%sHD    = ", level), 1), " ")
 
 	// Graphics stuff
 	if strings.Contains(output, "Graphics:") {
@@ -668,33 +647,33 @@ func ProcessSpecs(input string, isMin bool) string {
 		gpus[0] = strings.ReplaceAll(gpus[0], "or better", "")
 
 		if strings.Contains(gpus[0], "OpenGL") {
-			output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sOGL    = %s\n", level, strings.ReplaceAll(gpus[1], "OpenGL ", "")))
+			output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sOGL   = %s\n", level, strings.ReplaceAll(gpus[1], "OpenGL ", "")))
 		} else {
 			// Did not find OpenGL stuff, this means we can do a different regex then...
 			// Thanks Dandelion Sprout for this amazing RegEx
 			gpuRegEx3 := regexp.MustCompile(`(Graphics:)([a-zA-Z0-9.;' -]{1,})(, |/| / )([a-zA-Z0-9.;' -]{1,})(, |/| / )([a-zA-Z0-9.;' -]{1,})`)
 			gpus = gpuRegEx3.FindStringSubmatch(output)
 			if len(gpus) == 7 {
-				output = gpuRegEx3.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n|%sGPU3   = %s", level, gpus[2], level, gpus[4], level, gpus[6]))
+				output = gpuRegEx3.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU   = %s\n|%sGPU2  = %s\n|%sGPU3   = %s", level, gpus[2], level, gpus[4], level, gpus[6]))
 			} else {
 				gpuRegEx2 := regexp.MustCompile(`(Graphics:)(.+)(?: or |/|,|\|)+(.+)\n`)
 				gpus := gpuRegEx2.FindStringSubmatch(output)
 				if len(gpus) == 4 {
-					output = gpuRegEx2.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n", level, gpus[2], level, strings.TrimPrefix(gpus[3], " ")))
+					output = gpuRegEx2.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU   = %s\n|%sGPU2  = %s\n", level, gpus[2], level, strings.TrimPrefix(gpus[3], " ")))
 				} else {
 					gpus := gpuRegEx.FindStringSubmatch(output)
-					output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n", level, gpus[1], level, gpus[1]))
+					output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU   = %s\n|%sGPU2  = %s\n", level, gpus[1], level, gpus[1]))
 				}
 			}
 		}
 	}
 
-	output = strings.TrimSuffix(strings.Replace(output, "Memory:", fmt.Sprintf("|%sRAM    = ", level), 1), " ")
-	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sVRAM     = ", level), 1)
-	output = strings.Replace(output, "DirectX:", fmt.Sprintf("|%sDX     = ", level), 1)
-	output = strings.Replace(output, "Sound Card:", fmt.Sprintf("|%saudio  = ", level), 1)
+	output = strings.TrimSuffix(strings.Replace(output, "Memory:", fmt.Sprintf("|%sRAM   = ", level), 1), " ")
+	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sVRAM    = ", level), 1)
+	output = strings.Replace(output, "DirectX:", fmt.Sprintf("|%sDX    = ", level), 1)
+	output = strings.Replace(output, "Sound Card:", fmt.Sprintf("|%saudio = ", level), 1)
 
-	output = strings.Replace(output, "Additional Notes:", "\n|notes     = {{ii}}", 1)
+	output = strings.Replace(output, "Additional Notes:", "\n|notes    = {{ii}}", 1)
 
 	// Output
 	return output
@@ -717,7 +696,7 @@ func (game *Game) OutputSpecs() string {
 
 	if game.Data.Platforms.Windows {
 		output += "\n{{System requirements\n"
-		output += "|OSfamily  = Windows"
+		output += "|OSfamily = Windows"
 		specs = ProcessSpecs(game.Data.PCRequirements["minimum"].(string), true)
 		output += specs
 
@@ -733,7 +712,7 @@ func (game *Game) OutputSpecs() string {
 
 	if game.Data.Platforms.MAC {
 		output += "\n{{System requirements\n"
-		output += ("|OSfamily  = OS X")
+		output += ("|OSfamily = OS X")
 		specs = ProcessSpecs(game.Data.MACRequirements["minimum"].(string), true)
 		output += specs
 
@@ -749,7 +728,7 @@ func (game *Game) OutputSpecs() string {
 
 	if game.Data.Platforms.Linux {
 		output += "\n{{System requirements\n"
-		output += ("|OSfamily  = Linux")
+		output += ("|OSfamily = Linux")
 		specs = ProcessSpecs(game.Data.LinuxRequirements["minimum"].(string), true)
 		output += specs
 
@@ -858,7 +837,16 @@ func (game *Game) FormatLanguage(language string) string {
 		sanitisedLanguage = "Traditional Chinese"
 	}
 
-	return fmt.Sprintf("\n{{L10n/switch\n|language  = %s\n|interface = %v\n|audio     = %v\n|subtitles = %v\n|notes     = \n|fan       = \n|ref       = \n}}",
+	return fmt.Sprintf(`
+{{L10n/switch
+ |language  = %s
+ |interface = %v
+ |audio     = %v
+ |subtitles = %v
+ |notes     = 
+ |fan       = 
+ |ref       = 
+}}`,
 		sanitisedLanguage, game.Data.Languages[language].UI, game.Data.Languages[language].Audio, game.Data.Languages[language].Subtitles)
 }
 
@@ -866,6 +854,7 @@ func SanitiseName(name string, title bool) string {
 	name = strings.ReplaceAll(name, "™", "")
 	name = strings.ReplaceAll(name, "®", "")
 	name = strings.ReplaceAll(name, "©", "")
+	name = strings.ReplaceAll(name, ":", "")
 
 	if !title {
 		// game titles can have LLC
