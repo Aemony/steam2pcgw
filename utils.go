@@ -137,7 +137,7 @@ func createCache(gameId string, apiBody []byte, scrapeBody []byte) (err error) {
 
 func checkRequest(response *http.Response, err error) error {
 	if err != nil {
-		fmt.Printf("Failed to connect to the '%v'... (error: %s)\n", response.Request.URL, err)
+		fmt.Printf("Failed to connect (error: %s)\n", err)
 	} else if response.StatusCode != http.StatusOK {
 		fmt.Printf("Failed to connect to the '%v'... (HTTP code: %d)\n", response.Request.URL, response.StatusCode)
 		err = errors.New("status code not OK")
@@ -159,7 +159,7 @@ func fetchGame(gameId string) (err error) {
 	var apiBody []byte
 	var scrapeBody []byte
 
-	response, err = makeRequest(fmt.Sprintf("%s%s%s", API_LINK, gameId, LOCALE))
+	response, err = makeRequest(fmt.Sprintf("%s%s%s&cc=us", API_LINK, gameId, LOCALE))
 	if err = checkRequest(response, err); err != nil {
 		return
 	}
@@ -187,7 +187,7 @@ func fetchGame(gameId string) (err error) {
 	// 	fmt.Println("Game cover download failed")
 	// }
 
-	optionalResponse, optionalErr := makeRequest(fmt.Sprintf("https://store.steampowered.com/app/%s/%s", gameId, LOCALE))
+	optionalResponse, optionalErr := makeRequest(fmt.Sprintf("https://store.steampowered.com/app/%s/?cc=us%s", gameId, LOCALE))
 	if optionalErr = checkRequest(response, optionalErr); optionalErr == nil {
 		defer optionalResponse.Body.Close()
 		scrapeBody, _ = parseResponseToBody(optionalResponse)
@@ -205,7 +205,7 @@ func fetchGame(gameId string) (err error) {
 	return err
 }
 
-func ParseGame(gameId string) (body []byte, err error) {
+func ParseGame(gameId string, shouldsleep bool) (body []byte, err error) {
 	os.Mkdir("cache", 0777)
 	os.Mkdir("output", 0777)
 
@@ -218,6 +218,11 @@ func ParseGame(gameId string) (body []byte, err error) {
 	}
 
 	fmt.Println("Did not find game cache or cache is older than 7 days...")
+
+	// Optional 1-second sleep to not query DLC pages too often
+	if shouldsleep {
+		time.Sleep(time.Second)
+	}
 
 	err = fetchGame(gameId)
 	if err == nil {
@@ -245,6 +250,9 @@ func TakeInput() (string, error) {
 
 func GetExeBit(is32 bool, platform string, platforms Platforms, requirements Requirement) string {
 	value := "unknown"
+	if requirements == nil {
+		return value
+	}
 
 	if (platform == "windows" && platforms.Windows) || (platform == "mac" && platforms.MAC) || (platform == "linux" && platforms.Linux) {
 		var sanitised = strings.ToLower(requirements["minimum"].(string))
@@ -286,7 +294,7 @@ func GetExeBit(is32 bool, platform string, platforms Platforms, requirements Req
 		}
 	}
 
-	fmt.Printf("* [21/25] %s (32-bit: %v): %s\n", platform, is32, value)
+	fmt.Printf("* [23/26] %s (32-bit: %v): %s\n", platform, is32, value)
 
 	return value
 }
@@ -424,72 +432,51 @@ func (game *Game) parseAvailability(htmlString string) {
 	f(doc)
 }
 
-func (game *Game) parseReviews(htmlString string) {
-	reviewsRE := regexp.MustCompile(`<h2>Reviews<\/h2><a class='gReview.+<\/section>`)
-	reviews := reviewsRE.FindString(htmlString)
-	doc, _ := html.Parse(strings.NewReader(reviews))
-
-	var f func(n *html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "a" {
-			for _, a := range n.Attr {
-				if a.Key != "class" || !strings.Contains(a.Val, "gReview") {
-					continue
-				}
-
-				var href string
-				for _, b := range n.Attr {
-					if b.Key == "href" {
-						href = b.Val
-					}
-				}
-
-				for c := n.FirstChild; c != nil; c = c.NextSibling {
-					if c.Type != html.ElementNode || c.Data != "div" {
-						continue
-					}
-
-					for _, d := range c.Attr {
-						if d.Key != "class" || d.Val != "gReview__score" {
-							continue
-						}
-
-						for e := c.NextSibling; e != nil; e = e.NextSibling {
-							if e.Type != html.ElementNode || e.Data != "div" {
-								continue
-							}
-
-							for _, f := range e.Attr {
-								if f.Key != "class" && f.Val != "gReview__details" {
-									continue
-								}
-
-								for g := e.FirstChild; g != nil; g = g.NextSibling {
-									if g.Type != html.ElementNode || g.Data != "h3" {
-										continue
-									}
-
-									for h := g.FirstChild; h != nil; h = h.NextSibling {
-										if h.Type != html.TextNode {
-											continue
-										}
-
-										game.AddRating(h.Data, g.FirstChild.Data, href)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
+func regexSubstr(input string, format string) (string, error) {
+	infoRe := regexp.MustCompile(format)
+	match := infoRe.FindSubmatch([]byte(input))
+	if match == nil {
+		return "", errors.New("not found")
 	}
 
-	f(doc)
+	return string(match[1]), nil
+}
+
+func (game *Game) parseReviews(htmlString string) {
+	body, _ := regexSubstr(htmlString, `var page = (.+);`)
+	var allBody []interface{}
+	json.Unmarshal([]byte(body), &allBody)
+
+	if allBody == nil {
+		return
+	}
+
+	mainBody := allBody[1]
+
+	details := mainBody.(map[string]interface{})["detail"]
+	if details == nil {
+		return
+	}
+	reviews := details.(map[string]interface{})["reviews"]
+	if reviews == nil {
+		return
+	}
+
+	reviewList := reviews.([]interface{})
+
+	for _, v := range reviewList {
+		nn := v.(map[string]interface{})
+		count := nn["count"].(float64)
+
+		if count <= 4 {
+			continue
+		}
+
+		positive := (int64)(nn["positive"].(float64))
+		source := nn["source"].(string)
+		url := nn["url"].(string)
+		game.AddRating(source, strconv.FormatInt((positive), 10), url)
+	}
 }
 
 func (game *Game) AddStore(name, platforms, link string) {
@@ -585,6 +572,10 @@ func (game *Game) AddRating(name, scoreString, link string) {
 }
 
 func (game *Game) FindDirectX() string {
+	if game.Data.PCRequirements == nil {
+		return ""
+	}
+
 	if len(game.Data.PCRequirements["minimum"].(string)) == 0 {
 		return ""
 	}
@@ -608,159 +599,305 @@ func (game *Game) FindDirectX() string {
 	return version
 }
 
-func ProcessSpecs(input string, isMin bool) string {
-	// Create vars
-	var level string
+func splitChars(r rune) bool {
+	return r == '/' || r == '／' || r == ','
+}
+
+func fixMemSize(input string) string {
+	sizeRegEx := regexp.MustCompile(`(?i)\d[kmg]b`)
+	l := sizeRegEx.FindStringIndex(input)
+	if l != nil {
+		input = input[:l[0]+1] + " " + input[l[0]+1:]
+	}
+	return input
+}
+
+func ProcessSpecs(input string, isMin bool) SysRequirements {
+	result := SysRequirements{}
+
+	input = strings.ReplaceAll(input, "only", "")
+	input = strings.ReplaceAll(input, " or greater", "")
+	input = strings.ReplaceAll(input, " or better", "")
+	input = strings.ReplaceAll(input, " or later", "")
+	input = strings.ReplaceAll(input, " or higher", "")
+	input = strings.ReplaceAll(input, " or lower", "")
+	input = strings.ReplaceAll(input, " or equivalent", "")
+	input = strings.ReplaceAll(input, "Ghz", "GHz")
+	input = strings.ReplaceAll(input, "ghz", "GHz")
+	input = strings.ReplaceAll(input, "GHz", " GHz")
+	input = strings.ReplaceAll(input, "  GHz", " GHz")
+	input = strings.ReplaceAll(input, "®", "")
+	input = strings.ReplaceAll(input, "©", "")
+	lines := strings.Split(RemoveTags(input, "\n"), "\n")
+
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+
+		defRegEx := regexp.MustCompile(`([a-zA-Z *]+):(.+)$`)
+		defs := defRegEx.FindStringSubmatch(line)
+		if len(defs) != 3 {
+			continue
+		}
+		param := defs[2]
+		switch defs[1] {
+		case "OS":
+			fallthrough
+		case "OS *":
+			param = regexp.MustCompile(`(?i)\(?(32|64)[- ]?bits?\)?`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)microsoft`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)windows`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)os x`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)macos`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)versions?`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)\(r\)`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)\bor `).ReplaceAllString(param, ", ")
+			param = strings.ReplaceAll(param, ", ,", ",")
+			param = strings.ReplaceAll(param, ",,", ",")
+			param = strings.ReplaceAll(param, "/", ",")
+			param = strings.ReplaceAll(param, " ,", ",")
+			param = strings.ReplaceAll(param, ",", ", ")
+			param = strings.ReplaceAll(param, ",  ", ", ")
+			param = strings.Trim(param, " .,")
+			result.OS = param
+		case "Processor":
+			param = regexp.MustCompile(`(?i)processor`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)\(?(32|64)[- ]?bits?\)?`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)cpu`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)\bor `).ReplaceAllString(param, ", ")
+			param = strings.ReplaceAll(param, ", ,", ",")
+			param = strings.ReplaceAll(param, ",,", ",")
+			result.CPU = strings.FieldsFunc(param, splitChars)
+			for i := 0; i < len(result.CPU); i++ {
+				result.CPU[i] = strings.Trim(result.CPU[i], " .,")
+			}
+		case "Memory":
+			param = regexp.MustCompile(`(?i)ram`).ReplaceAllString(param, "")
+			param = fixMemSize(param)
+			result.RAM = strings.Trim(param, " ")
+		case "Graphics":
+			fallthrough
+		case "Video Card":
+			param = regexp.MustCompile(`(?i)\bor `).ReplaceAllString(param, ", ")
+			param = regexp.MustCompile(`(?i)\band `).ReplaceAllString(param, ", ")
+			param = strings.ReplaceAll(param, ", ,", ",")
+			param = strings.ReplaceAll(param, ",,", ",")
+
+			gpus := []string{}
+			fields := strings.FieldsFunc(param, splitChars)
+			for i := 0; i < len(fields); i++ {
+				ogl := regexp.MustCompile(`OpenGL\s*([0-9.]+)`).FindStringSubmatch(fields[i])
+				if len(ogl) == 2 {
+					result.OGL = ogl[1]
+				} else {
+					p := strings.ReplaceAll(fields[i], "NVIDIA", "Nvidia")
+					p = strings.ReplaceAll(p, "Amd", "AMD")
+					p = strings.Trim(p, " .,")
+					gpus = append(gpus, p)
+				}
+			}
+			result.GPU = gpus
+		case "DirectX":
+			param = regexp.MustCompile(`(?i)version`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)directx`).ReplaceAllString(param, "")
+			result.DX = strings.Trim(param, " ")
+		case "Storage":
+			fallthrough
+		case "Hard Drive":
+			fallthrough
+		case "Hard Disk Space":
+			param = regexp.MustCompile(`(?i)available space`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)hd space`).ReplaceAllString(param, "")
+			param = regexp.MustCompile(`(?i)free space`).ReplaceAllString(param, "")
+			param = fixMemSize(param)
+			result.HD = strings.Trim(param, " ")
+		case "Other Requirements":
+			result.Other = param
+		case "Additional Notes":
+			result.Notes = param
+		default:
+			// fmt.Println("Unprocessed requirement ", defs[1], " - ", param)
+		}
+
+	}
+	return result
+}
+
+func processSysRequirements(input string, specs SysRequirements, level string) string {
 	output := input
 
-	if len(output) == 0 {
-		return output
+	mkItem := func(op string) string {
+		return "$" + level + "_" + op + "$"
 	}
 
-	// Sanitise input and remove HTML tags
-	output = RemoveTags(output, "\n")
+	output = strings.ReplaceAll(output, mkItem("os_versions"), specs.OS)
 
-	// Cleanup some text, more texts must be added here...
-	output = strings.Replace(output, "Requires a 64-bit processor and operating system", "", 1)
-	output = strings.ReplaceAll(output, "available space", "")
-	output = strings.ReplaceAll(output, "RAM", "")
-	output = strings.ReplaceAll(output, "Version ", "")
-	output = strings.ReplaceAll(output, "Windows ", "")
-
-	networkRe := regexp.MustCompile(`Network:(.+)\n`)
-	output = networkRe.ReplaceAllLiteralString(output, "")
-
-	// Determine
-	if isMin {
-		level = "min"
-		output = strings.Replace(output, "Minimum:\n", "", 1)
+	if len(specs.CPU) >= 1 {
+		output = strings.ReplaceAll(output, mkItem("cpu1"), specs.CPU[0])
 	} else {
-		level = "rec"
-		output = strings.Replace(output, "Recommended:\n", "", 1)
+		output = strings.ReplaceAll(output, mkItem("cpu1"), "")
 	}
 
-	// Replace
-	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sOS     = ", level), 1)
-	output = strings.Replace(output, "VR Support:", fmt.Sprintf("|%sother  = ", level), 1)
+	if len(specs.CPU) >= 2 {
+		output = strings.ReplaceAll(output, mkItem("cpu2"), specs.CPU[1])
+	} else {
+		output = strings.ReplaceAll(output, mkItem("cpu2"), "")
+	}
 
-	// Processor stuff
-	if strings.Contains(output, "Processor:") {
-		cpuRegEx := regexp.MustCompile(`(Processor:)(.+?)(?: or |/|,|\|)+(.+)\n`)
-		cpus := cpuRegEx.FindStringSubmatch(output)
+	output = strings.ReplaceAll(output, mkItem("ram"), specs.RAM)
+	output = strings.ReplaceAll(output, mkItem("hd"), specs.HD)
+	if len(specs.GPU) >= 1 {
+		output = strings.ReplaceAll(output, mkItem("gpu1"), specs.GPU[0])
+	} else {
+		output = strings.ReplaceAll(output, mkItem("gpu1"), "")
+	}
 
-		if len(cpus) == 4 {
-			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU    = %s\n|%sCPU2   = %s\n", level, cpus[2], level, strings.TrimPrefix(cpus[3], " ")))
-		} else {
-			cpuRegEx = regexp.MustCompile(`Processor:(.+)\n`)
-			cpus = cpuRegEx.FindStringSubmatch(output)
-			output = cpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sCPU    = %s\n|%sCPU2   = %s\n", level, cpus[1], level, cpus[1]))
+	if len(specs.GPU) >= 2 {
+		gpus := specs.GPU[1]
+		if len(specs.GPU) >= 3 { // if GPU3 is present insert it right after GPU2
+			gpus += "\n|" + level + "GPU3  = " + specs.GPU[2]
 		}
+		output = strings.ReplaceAll(output, mkItem("gpu2"), gpus)
+	} else {
+		output = strings.ReplaceAll(output, mkItem("gpu2"), "")
 	}
 
-	output = strings.TrimSuffix(strings.Replace(output, "Storage:", fmt.Sprintf("|%sHD     = ", level), 1), " ")
+	vram := specs.VRAM
+	if len(specs.OGL) != 0 { // if OGL is present insert it after VRAM
+		vram += "\n|" + level + "OGL   = " + specs.OGL
+	}
+	output = strings.ReplaceAll(output, mkItem("vram"), vram)
 
-	// Graphics stuff
-	if strings.Contains(output, "Graphics:") {
-		gpuRegEx := regexp.MustCompile(`Graphics:(.+)\n`)
-		gpus := gpuRegEx.FindStringSubmatch(output)
+	dx := specs.DX
+	if len(specs.Other) != 0 { // if other is present insert it after DX
+		dx += "\n|" + level + "other = " + specs.Other
+	}
+	output = strings.ReplaceAll(output, mkItem("dx"), dx)
 
-		gpus[0] = strings.ReplaceAll(gpus[0], "or greater", "")
-		gpus[0] = strings.ReplaceAll(gpus[0], "or better", "")
+	output = strings.ReplaceAll(output, "$notes$", specs.Notes)
 
-		if strings.Contains(gpus[0], "OpenGL") {
-			output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sOGL    = %s\n", level, strings.ReplaceAll(gpus[1], "OpenGL ", "")))
-		} else {
-			// Did not find OpenGL stuff, this means we can do a different regex then...
-			// Thanks Dandelion Sprout for this amazing RegEx
-			gpuRegEx3 := regexp.MustCompile(`(Graphics:)([a-zA-Z0-9.;' -]{1,})(, |/| / )([a-zA-Z0-9.;' -]{1,})(, |/| / )([a-zA-Z0-9.;' -]{1,})`)
-			gpus = gpuRegEx3.FindStringSubmatch(output)
-			if len(gpus) == 7 {
-				output = gpuRegEx3.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n|%sGPU3   = %s", level, gpus[2], level, gpus[4], level, gpus[6]))
-			} else {
-				gpuRegEx2 := regexp.MustCompile(`(Graphics:)(.+)(?: or |/|,|\|)+(.+)\n`)
-				gpus := gpuRegEx2.FindStringSubmatch(output)
-				if len(gpus) == 4 {
-					output = gpuRegEx2.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n", level, gpus[2], level, strings.TrimPrefix(gpus[3], " ")))
-				} else {
-					gpus := gpuRegEx.FindStringSubmatch(output)
-					output = gpuRegEx.ReplaceAllLiteralString(output, fmt.Sprintf("|%sGPU    = %s\n|%sGPU2   = %s\n", level, gpus[1], level, gpus[1]))
-				}
+	return output
+}
+
+func CleanRecommended(min SysRequirements, rec SysRequirements) SysRequirements {
+	if min.OS == rec.OS {
+		rec.OS = ""
+	}
+
+	if len(min.CPU) == len(rec.CPU) {
+		for i := 0; i < len(min.CPU); i++ {
+			if min.CPU[i] == rec.CPU[i] {
+				rec.CPU[i] = ""
 			}
 		}
 	}
 
-	output = strings.TrimSuffix(strings.Replace(output, "Memory:", fmt.Sprintf("|%sRAM    = ", level), 1), " ")
-	output = strings.Replace(output, "OS:", fmt.Sprintf("|%sVRAM     = ", level), 1)
-	output = strings.Replace(output, "DirectX:", fmt.Sprintf("|%sDX     = ", level), 1)
-	output = strings.Replace(output, "Sound Card:", fmt.Sprintf("|%saudio  = ", level), 1)
+	if min.RAM == rec.RAM {
+		rec.RAM = ""
+	}
 
-	output = strings.Replace(output, "Additional Notes:", "\n|notes     = {{ii}}", 1)
+	if min.HD == rec.HD {
+		rec.HD = ""
+	}
 
-	// Output
-	return output
+	if len(min.GPU) == len(rec.GPU) {
+		for i := 0; i < len(min.GPU); i++ {
+			if min.GPU[i] == rec.GPU[i] {
+				rec.GPU[i] = ""
+			}
+		}
+	}
+
+	if min.VRAM == rec.VRAM {
+		rec.VRAM = ""
+	}
+
+	if min.OGL == rec.OGL {
+		rec.OGL = ""
+	}
+
+	if min.DX == rec.DX {
+		rec.DX = ""
+	}
+
+	if min.Other == rec.Other {
+		rec.Other = ""
+	}
+
+	if min.Notes == rec.Notes {
+		rec.Notes = ""
+	}
+
+	return rec
 }
 
-func emptySpecs(level string) string {
-	return fmt.Sprintf(`|%sOS    = 
-|%sCPU   = 
-|%sCPU2  = 
-|%sRAM   = 
-|%sHD    = 
-|%sGPU   = 
-|%sGPU2  = 
-|%sVRAM  = `, level, level, level, level, level, level, level, level)
+func outputPlaform(isMin bool, isRec bool, minspecs string, recspecs string, osname string) string {
+	var output string = system_requirements_template
+	var reqsmin SysRequirements
+	var reqsrec SysRequirements
+
+	output = strings.ReplaceAll(output, "$os_name$", osname)
+
+	if isMin {
+		reqsmin = ProcessSpecs(minspecs, true)
+		output = processSysRequirements(output, reqsmin, "min")
+	} else {
+		output = processSysRequirements(output, SysRequirements{}, "min")
+	}
+
+	// Handle recommended specs
+	if isRec {
+		reqsrec = ProcessSpecs(recspecs, false)
+		reqsrec = CleanRecommended(reqsmin, reqsrec)
+		output = processSysRequirements(output, reqsrec, "rec")
+	} else {
+		output = processSysRequirements(output, SysRequirements{}, "rec")
+	}
+
+	return output
 }
 
 func (game *Game) OutputSpecs() string {
 	var output string = ""
-	var specs string = ""
+	var minStr = ""
+	var recStr = ""
 
 	if game.Data.Platforms.Windows {
-		output += "\n{{System requirements\n"
-		output += "|OSfamily  = Windows"
-		specs = ProcessSpecs(game.Data.PCRequirements["minimum"].(string), true)
-		output += specs
+		isMin := game.Data.PCRequirements != nil && game.Data.PCRequirements["minimum"] != nil
+		isRec := game.Data.PCRequirements != nil && game.Data.PCRequirements["recommended"] != nil
 
-		// Handle recommended specs
-		if game.Data.PCRequirements["recommended"] != nil {
-			specs = ProcessSpecs(game.Data.PCRequirements["recommended"].(string), false)
-			output += specs
-		} else {
-			output += emptySpecs("rec")
+		if isMin {
+			minStr = game.Data.PCRequirements["minimum"].(string)
 		}
-		output += "\n}}\n"
+		if isRec {
+			recStr = game.Data.PCRequirements["recommended"].(string)
+		}
+		output += outputPlaform(isMin, isRec, minStr, recStr, "Windows")
 	}
 
 	if game.Data.Platforms.MAC {
-		output += "\n{{System requirements\n"
-		output += ("|OSfamily  = OS X")
-		specs = ProcessSpecs(game.Data.MACRequirements["minimum"].(string), true)
-		output += specs
-
-		// Handle recommended specs
-		if game.Data.MACRequirements["recommended"] != nil {
-			specs = ProcessSpecs(game.Data.MACRequirements["recommended"].(string), false)
-			output += specs
-		} else {
-			output += emptySpecs("rec")
+		isMin := game.Data.MACRequirements != nil && game.Data.MACRequirements["minimum"] != nil
+		isRec := game.Data.MACRequirements != nil && game.Data.MACRequirements["recommended"] != nil
+		if isMin {
+			minStr = game.Data.MACRequirements["minimum"].(string)
 		}
-		output += "\n}}\n"
+		if isRec {
+			recStr = game.Data.MACRequirements["recommended"].(string)
+		}
+		output += outputPlaform(isMin, isRec, minStr, recStr, "OS X")
 	}
 
 	if game.Data.Platforms.Linux {
-		output += "\n{{System requirements\n"
-		output += ("|OSfamily  = Linux")
-		specs = ProcessSpecs(game.Data.LinuxRequirements["minimum"].(string), true)
-		output += specs
-
-		// Handle recommended specs
-		if game.Data.LinuxRequirements["recommended"] != nil {
-			specs = ProcessSpecs(game.Data.LinuxRequirements["recommended"].(string), false)
-			output += specs
-		} else {
-			output += emptySpecs("rec")
+		isMin := game.Data.LinuxRequirements != nil && game.Data.LinuxRequirements["minimum"] != nil
+		isRec := game.Data.LinuxRequirements != nil && game.Data.LinuxRequirements["recommended"] != nil
+		if isMin {
+			minStr = game.Data.LinuxRequirements["minimum"].(string)
 		}
-		output += "\n}}\n"
+		if isRec {
+			recStr = game.Data.LinuxRequirements["recommended"].(string)
+		}
+		output += outputPlaform(isMin, isRec, minStr, recStr, "Linux")
 	}
 
 	return output
@@ -768,9 +905,10 @@ func (game *Game) OutputSpecs() string {
 
 func (game *Game) addLanguage(name string, ui, audio, subtitles bool) {
 
-	if name == "Simplified Chinese" {
+	switch name {
+	case "Simplified Chinese":
 		name = "Chinese Simplified"
-	} else if name == "Traditional Chinese" {
+	case "Traditional Chinese":
 		name = "Chinese Traditional"
 	}
 
@@ -846,26 +984,32 @@ func ParseDate(date string) (output string) {
 func (game *Game) FormatLanguage(language string) string {
 	sanitisedLanguage := language
 
-	if sanitisedLanguage == "Spanish - Spain" {
+	switch sanitisedLanguage {
+	case "Spanish - Spain":
 		sanitisedLanguage = "Spanish"
-	} else if sanitisedLanguage == "Spanish - Latin America" {
+	case "Spanish - Latin America":
 		sanitisedLanguage = "Latin American Spanish"
-	} else if sanitisedLanguage == "Portuguese - Brazil" {
+	case "Portuguese - Brazil":
 		sanitisedLanguage = "Brazilian Portuguese"
-	} else if sanitisedLanguage == "Chinese Simplified" {
+	case "Chinese Simplified":
 		sanitisedLanguage = "Simplified Chinese"
-	} else if sanitisedLanguage == "Chinese Traditional" {
+	case "Chinese Traditional":
 		sanitisedLanguage = "Traditional Chinese"
 	}
 
-	return fmt.Sprintf("\n{{L10n/switch\n|language  = %s\n|interface = %v\n|audio     = %v\n|subtitles = %v\n|notes     = \n|fan       = \n|ref       = \n}}",
-		sanitisedLanguage, game.Data.Languages[language].UI, game.Data.Languages[language].Audio, game.Data.Languages[language].Subtitles)
+	output := language_template
+	output = strings.ReplaceAll(output, "$language_name$", sanitisedLanguage)
+	output = strings.ReplaceAll(output, "$language_interface$", strconv.FormatBool(game.Data.Languages[language].UI))
+	output = strings.ReplaceAll(output, "$language_audio$", strconv.FormatBool(game.Data.Languages[language].Audio))
+	output = strings.ReplaceAll(output, "$language_subtitles$", strconv.FormatBool(game.Data.Languages[language].Subtitles))
+	return output
 }
 
 func SanitiseName(name string, title bool) string {
 	name = strings.ReplaceAll(name, "™", "")
 	name = strings.ReplaceAll(name, "®", "")
 	name = strings.ReplaceAll(name, "©", "")
+	name = strings.ReplaceAll(name, ":", "")
 
 	if !title {
 		// game titles can have LLC

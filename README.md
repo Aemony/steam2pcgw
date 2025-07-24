@@ -13,14 +13,14 @@ Well, it's certainly up to you to decide whether you want to use it or not, and 
 
 ## Version
 
-v0.0.74 Release Candidate 6
+v0.0.76
 
 ## How To
 
 1. Either visit the Releases page and download the latest build from there.
 2. Download the ZIP (Press 'Code' → 'Download ZIP') or Clone.
 3. Create two directories where the executable is placed: `cache` (stores all the Steam Page and Steam API cache) and `output` (outputs all the generated articles in there).
-4. Run the executable or type `go run` (you'll require Go <https://go.dev/doc/install> to do this!).
+4. Run the executable or type `go run .` (you'll require Go <https://go.dev/doc/install> to do this!).
 
 ## Contributions
 
@@ -93,6 +93,7 @@ v0.0.74 Release Candidate 6
 - [ ] Input: Controller (PS/Xbox/Others) (IMPOSSIBLE)
 - [x] Audio (Subtitles status is automatically set)
 - [x] Languages (There maybe some discrepancies as Steam API provides very vague info - No discrepancies reported so far)
+- [x] VR
 - [ ] API (App executables are guessed from the system specifications - mostly accurate)
 - [ ] Middleware
 - [x] System Requirements: Windows (CPU and GPU sections may need review)
