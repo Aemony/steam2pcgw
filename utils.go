@@ -609,6 +609,7 @@ func fixMemSize(input string) string {
 	if l != nil {
 		input = input[:l[0]+1] + " " + input[l[0]+1:]
 	}
+	input = strings.ReplaceAll(input, "  ", " ")
 	return input
 }
 
@@ -622,6 +623,7 @@ func ProcessSpecs(input string, isMin bool) SysRequirements {
 	input = strings.ReplaceAll(input, " or higher", "")
 	input = strings.ReplaceAll(input, " or lower", "")
 	input = strings.ReplaceAll(input, " or equivalent", "")
+	input = strings.ReplaceAll(input, " and above", "")
 	input = strings.ReplaceAll(input, "Ghz", "GHz")
 	input = strings.ReplaceAll(input, "ghz", "GHz")
 	input = strings.ReplaceAll(input, "GHz", " GHz")
@@ -968,7 +970,7 @@ func (game *Game) ProcessLanguages() {
 }
 
 func IsDate(date string) (bool, []string) {
-	dateRe := regexp.MustCompile(`(\d+) (\w+), (\d+)`)
+	dateRe := regexp.MustCompile(`(\w+) (\d+), (\d+)`)
 	tokens := dateRe.FindStringSubmatch(date)
 	return (len(tokens) != 0), tokens
 }
@@ -976,7 +978,7 @@ func IsDate(date string) (bool, []string) {
 func ParseDate(date string) (output string) {
 	success, tokens := IsDate(date)
 	if success {
-		output = fmt.Sprintf("%s %s %s", tokens[2], tokens[1], tokens[3])
+		output = fmt.Sprintf("%s %s, %s", tokens[1], tokens[2], tokens[3])
 	}
 	return output
 }
@@ -1009,7 +1011,6 @@ func SanitiseName(name string, title bool) string {
 	name = strings.ReplaceAll(name, "™", "")
 	name = strings.ReplaceAll(name, "®", "")
 	name = strings.ReplaceAll(name, "©", "")
-	name = strings.ReplaceAll(name, ":", "")
 
 	if !title {
 		// game titles can have LLC
